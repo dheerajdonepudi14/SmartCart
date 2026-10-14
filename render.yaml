@@ -48,11 +48,11 @@ services:
       - key: JWT_COOKIE_SECURE
         value: "true"
 
-      # --- URLs: your Vercel site, e.g. https://smart-cart.vercel.app (no trailing slash) ---
+      # --- URLs: the Vercel site (no trailing slash) ---
       - key: FRONTEND_URL
-        sync: false
+        value: https://smart-cart-one-taupe.vercel.app
       - key: CORS_ALLOWED_ORIGINS
-        sync: false
+        value: https://smart-cart-one-taupe.vercel.app
 
       # --- Seed data: creates the admin + demo catalogue on the first start only ---
       - key: SEED_ENABLED
