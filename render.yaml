@@ -14,8 +14,13 @@ services:
     runtime: docker
     plan: free
     region: singapore
-    rootDir: backend
-    dockerfilePath: ./Dockerfile
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    # Only backend changes trigger a redeploy.
+    buildFilter:
+      paths:
+        - backend/**
+        - render.yaml
     healthCheckPath: /actuator/health/readiness
     envVars:
       - key: SPRING_PROFILES_ACTIVE
