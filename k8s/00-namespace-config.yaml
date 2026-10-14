@@ -1,0 +1,26 @@
+# Smart Cart on Kubernetes (EKS / GKE / AKS). Uses a managed PostgreSQL (RDS / Cloud SQL / Azure DB).
+# Create the secret first (never commit real values):
+#   kubectl -n smart-cart create secret generic smart-cart-secrets \
+#     --from-literal=SPRING_DATASOURCE_PASSWORD=... --from-literal=JWT_SECRET=... \
+#     --from-literal=RAZORPAY_KEY_ID=... --from-literal=RAZORPAY_KEY_SECRET=... --from-literal=RAZORPAY_WEBHOOK_SECRET=... \
+#     --from-literal=PHONEPE_CLIENT_ID=... --from-literal=PHONEPE_CLIENT_SECRET=... \
+#     --from-literal=PHONEPE_WEBHOOK_USERNAME=... --from-literal=PHONEPE_WEBHOOK_PASSWORD=...
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: smart-cart
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: smart-cart-config
+  namespace: smart-cart
+data:
+  SPRING_PROFILES_ACTIVE: prod
+  SPRING_DATASOURCE_URL: jdbc:postgresql://your-managed-postgres:5432/smartcart?sslmode=require
+  SPRING_DATASOURCE_USERNAME: smartcart
+  FRONTEND_URL: https://www.smartcart.example
+  CORS_ALLOWED_ORIGINS: https://www.smartcart.example
+  PHONEPE_ENV: PRODUCTION
+  PHONEPE_CLIENT_VERSION: "1"
+  JWT_COOKIE_SECURE: "true"

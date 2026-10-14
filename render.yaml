@@ -1,0 +1,84 @@
+# Render Blueprint: Spring Boot API (Docker) + PostgreSQL.
+# Render dashboard -> New -> Blueprint -> pick this repo. Values marked `sync: false` are asked for
+# on the first deploy (and can be edited later under the service's Environment tab).
+databases:
+  - name: smartcart-db
+    plan: free
+    databaseName: smartcart
+    user: smartcart
+    region: singapore
+
+services:
+  - type: web
+    name: smartcart-api
+    runtime: docker
+    plan: free
+    region: singapore
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /actuator/health/readiness
+    envVars:
+      - key: SPRING_PROFILES_ACTIVE
+        value: prod
+      - key: JAVA_OPTS
+        value: "-XX:MaxRAMPercentage=70 -XX:+UseSerialGC -XX:+ExitOnOutOfMemoryError"
+
+      # --- Database (wired from smartcart-db) ---
+      - key: DB_HOST
+        fromDatabase: { name: smartcart-db, property: host }
+      - key: DB_PORT
+        fromDatabase: { name: smartcart-db, property: port }
+      - key: DB_NAME
+        fromDatabase: { name: smartcart-db, property: database }
+      - key: SPRING_DATASOURCE_USERNAME
+        fromDatabase: { name: smartcart-db, property: user }
+      - key: SPRING_DATASOURCE_PASSWORD
+        fromDatabase: { name: smartcart-db, property: password }
+      - key: DB_POOL_SIZE
+        value: "5"
+
+      # --- Auth ---
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_COOKIE_SECURE
+        value: "true"
+
+      # --- URLs: your Vercel site, e.g. https://smart-cart.vercel.app (no trailing slash) ---
+      - key: FRONTEND_URL
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+
+      # --- Seed data: creates the admin + demo catalogue on the first start only ---
+      - key: SEED_ENABLED
+        value: "true"
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+
+      # --- Razorpay (test keys rzp_test_... are fine) ---
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+
+      # --- Email (Gmail SMTP with an App Password) ---
+      - key: MAIL_ENABLED
+        value: "true"
+      - key: MAIL_HOST
+        value: smtp.gmail.com
+      - key: MAIL_PORT
+        value: "587"
+      - key: MAIL_SMTP_AUTH
+        value: "true"
+      - key: MAIL_SMTP_STARTTLS
+        value: "true"
+      - key: MAIL_USERNAME
+        sync: false
+      - key: MAIL_PASSWORD
+        sync: false
+      - key: MAIL_FROM
+        sync: false

@@ -1,0 +1,37 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:smartcart;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  flyway:
+    enabled: false
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+
+app:
+  invoices:
+    dir: target/test-invoices
+  jwt:
+    secret: test-secret-test-secret-test-secret-0123456789
+  rate-limit:
+    auth-per-minute: 1000
+    general-per-minute: 10000
+  seed:
+    enabled: true
+    admin-email: admin@test.local
+    admin-password: Admin@12345
+  payments:
+    # Razorpay key id/secret and base-url are injected by the tests (RazorpayStub).
+    razorpay:
+      webhook-secret: test-webhook-secret
+    phonepe:
+      client-id: ""
+      client-secret: ""
+      webhook-username: hookuser
+      webhook-password: hookpass
+
+logging:
+  level:
+    com.smartcart: DEBUG

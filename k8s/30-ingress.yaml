@@ -1,0 +1,42 @@
+# TLS via cert-manager + Let's Encrypt (install cert-manager and a ClusterIssuer named letsencrypt).
+# Only /api is exposed on the API host; /actuator stays internal (scraped in-cluster by Prometheus).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: smart-cart
+  namespace: smart-cart
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    # Server-Sent Events (live order status) need long-lived, unbuffered connections.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/limit-rps: "20"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [www.smartcart.example, api.smartcart.example]
+      secretName: smart-cart-tls
+  rules:
+    - host: www.smartcart.example
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: frontend, port: { number: 3000 } }
+    - host: api.smartcart.example
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service: { name: backend, port: { number: 8080 } }
+          - path: /swagger-ui
+            pathType: Prefix
+            backend:
+              service: { name: backend, port: { number: 8080 } }
+          - path: /v3/api-docs
+            pathType: Prefix
+            backend:
+              service: { name: backend, port: { number: 8080 } }

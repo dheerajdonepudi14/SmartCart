@@ -1,0 +1,2591 @@
+{
+  "info": {
+    "_postman_id": "329e567f-446d-5804-8939-ce050fcc3005",
+    "name": "Smart Cart API",
+    "description": "Smart Cart (Spring Boot + PostgreSQL) with real-time Razorpay payments.\n\n**Setup**: import `SmartCart-Local.postman_environment.json`, select it, and fill `razorpayKeySecret` (and `razorpayWebhookSecret`) as *current values* - they stay on your machine. Start the backend with the same keys in `.env`.\n\n**JWT**: login requests store `accessToken` / `adminAccessToken` and show decoded claims in the Visualize tab. Folder scripts log in automatically when the token is missing or expiring.\n\n**Payments**: folder 04 creates a real Razorpay order and prints `payUrl`; pay it in the browser, then run 05.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{accessToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "id": "85eb507b-8228-59e1-8e33-9bbe9763349c",
+      "name": "00 Setup & health",
+      "item": [
+        {
+          "id": "537f8ea4-17f7-571d-8b3a-d18124730691",
+          "name": "Health (actuator)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{serverUrl}}/actuator/health",
+              "host": [
+                "{{serverUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "pm.test('Backend is UP', () => pm.expect(pm.response.json().status).to.eql('UP'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "b708639f-7b93-5655-9eb7-8ea238c8a802",
+          "name": "Payment gateway config",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/payments/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments",
+                "config"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "const cfg = pm.response.json();",
+                  "console.log('Gateways', cfg.gateways);",
+                  "pm.test('Razorpay is configured on the server (RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET)', () =>",
+                  "    pm.expect(cfg.gateways.RAZORPAY.available, 'Set Razorpay keys in the backend .env and restart').to.be.true);",
+                  "pm.test('Razorpay mode is test or live', () => pm.expect(cfg.gateways.RAZORPAY.mode).to.be.oneOf(['test', 'live']));",
+                  "if (cfg.razorpayKeyId) {",
+                  "    pm.environment.set('razorpayKeyId', cfg.razorpayKeyId);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "event": [],
+      "description": "Checks the API is up and that real Razorpay keys are loaded. There is no simulator: if Razorpay is not configured, checkout returns 503."
+    },
+    {
+      "id": "8cf64bd0-2cbc-5c04-9fa7-eeda494cc5f2",
+      "name": "01 Auth (JWT)",
+      "item": [
+        {
+          "id": "19e747ef-685e-58ae-baee-9e2e8872183a",
+          "name": "Register shopper",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{userName}}\",\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.environment.get('userEmail')) {",
+                  "    pm.environment.set('userEmail', 'shopper.' + Date.now() + '@example.com');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Decodes the header and payload of a JWT (no signature check - the server does that).",
+                  "function decodeJwt(token) {",
+                  "    const cryptoJs = require('crypto-js');",
+                  "    const part = (s) => {",
+                  "        const b64 = s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4);",
+                  "        return JSON.parse(cryptoJs.enc.Utf8.stringify(cryptoJs.enc.Base64.parse(b64)));",
+                  "    };",
+                  "    const [h, p] = token.split('.');",
+                  "    return { header: part(h), payload: part(p) };",
+                  "}function saveToken(varName, body) {",
+                  "    pm.environment.set(varName, body.accessToken);",
+                  "    const jwt = decodeJwt(body.accessToken);",
+                  "    pm.environment.set(varName + 'Payload', JSON.stringify(jwt.payload));",
+                  "    pm.environment.set(varName + 'ExpiresAt', new Date(jwt.payload.exp * 1000).toISOString());",
+                  "    console.log('JWT header', jwt.header);",
+                  "    console.log('JWT payload', jwt.payload);",
+                  "    const template = `",
+                  "      <style>body{font-family:system-ui;padding:8px} table{border-collapse:collapse} td,th{border:1px solid #ddd;padding:6px 10px;text-align:left}",
+                  "      code{word-break:break-all;display:block;background:#fff7ed;padding:8px;border-radius:6px}</style>",
+                  "      <h3>Access token (JWT, {{alg}})</h3><code>{{token}}</code>",
+                  "      <h4>Claims</h4><table>{{#each claims}}<tr><th>{{k}}</th><td>{{v}}</td></tr>{{/each}}</table>",
+                  "      <p>Refresh token: HttpOnly cookie <b>sc_refresh</b> (see the Cookies tab / cookie manager).</p>`;",
+                  "    const claims = Object.entries(jwt.payload).map(([k, v]) => ({",
+                  "        k, v: (k === 'iat' || k === 'exp') ? v + '  (' + new Date(v * 1000).toISOString() + ')' : v }));",
+                  "    pm.visualizer.set(template, { token: body.accessToken, alg: jwt.header.alg, claims });",
+                  "    return jwt;",
+                  "}",
+                  "pm.test('HTTP status is 200 or 409', () => pm.expect(pm.response.code).to.be.oneOf([200, 409]));",
+                  "if (pm.response.code === 200) {",
+                  "    const jwt = saveToken('accessToken', pm.response.json());",
+                  "    pm.test('JWT carries role ROLE_USER', () => pm.expect(jwt.payload.role).to.eql('ROLE_USER'));",
+                  "    pm.test('Refresh token set as HttpOnly cookie sc_refresh', () => pm.expect(pm.cookies.has('sc_refresh')).to.be.true);",
+                  "} else {",
+                  "    console.log('Account already exists - use \"Login shopper\".');",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "c045f989-1226-5235-bb96-812f8e6e7288",
+          "name": "Login shopper",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Decodes the header and payload of a JWT (no signature check - the server does that).",
+                  "function decodeJwt(token) {",
+                  "    const cryptoJs = require('crypto-js');",
+                  "    const part = (s) => {",
+                  "        const b64 = s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4);",
+                  "        return JSON.parse(cryptoJs.enc.Utf8.stringify(cryptoJs.enc.Base64.parse(b64)));",
+                  "    };",
+                  "    const [h, p] = token.split('.');",
+                  "    return { header: part(h), payload: part(p) };",
+                  "}function saveToken(varName, body) {",
+                  "    pm.environment.set(varName, body.accessToken);",
+                  "    const jwt = decodeJwt(body.accessToken);",
+                  "    pm.environment.set(varName + 'Payload', JSON.stringify(jwt.payload));",
+                  "    pm.environment.set(varName + 'ExpiresAt', new Date(jwt.payload.exp * 1000).toISOString());",
+                  "    console.log('JWT header', jwt.header);",
+                  "    console.log('JWT payload', jwt.payload);",
+                  "    const template = `",
+                  "      <style>body{font-family:system-ui;padding:8px} table{border-collapse:collapse} td,th{border:1px solid #ddd;padding:6px 10px;text-align:left}",
+                  "      code{word-break:break-all;display:block;background:#fff7ed;padding:8px;border-radius:6px}</style>",
+                  "      <h3>Access token (JWT, {{alg}})</h3><code>{{token}}</code>",
+                  "      <h4>Claims</h4><table>{{#each claims}}<tr><th>{{k}}</th><td>{{v}}</td></tr>{{/each}}</table>",
+                  "      <p>Refresh token: HttpOnly cookie <b>sc_refresh</b> (see the Cookies tab / cookie manager).</p>`;",
+                  "    const claims = Object.entries(jwt.payload).map(([k, v]) => ({",
+                  "        k, v: (k === 'iat' || k === 'exp') ? v + '  (' + new Date(v * 1000).toISOString() + ')' : v }));",
+                  "    pm.visualizer.set(template, { token: body.accessToken, alg: jwt.header.alg, claims });",
+                  "    return jwt;",
+                  "}",
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "const body = pm.response.json();",
+                  "const jwt = saveToken('accessToken', body);",
+                  "pm.test('Token type is Bearer', () => pm.expect(body.tokenType).to.eql('Bearer'));",
+                  "pm.test('JWT has header.payload.signature', () => pm.expect(body.accessToken.split('.')).to.have.length(3));",
+                  "pm.test('Signed with HS256', () => pm.expect(jwt.header.alg).to.eql('HS256'));",
+                  "pm.test('Claims: sub, email, role, iat, exp, jti, iss', () =>",
+                  "    pm.expect(jwt.payload).to.include.keys('sub', 'email', 'role', 'iat', 'exp', 'jti', 'iss'));",
+                  "pm.test('expiresIn matches exp - iat (access token lifetime)', () =>",
+                  "    pm.expect(jwt.payload.exp - jwt.payload.iat).to.eql(body.expiresIn));",
+                  "pm.test('Refresh token cookie sc_refresh is set', () => pm.expect(pm.cookies.has('sc_refresh')).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "cb3f27e9-977e-5563-ac2f-6d1bf1d94722",
+          "name": "Current user (me)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "pm.test('Token identifies the shopper', () => pm.expect(pm.response.json().email).to.eql(pm.environment.get('userEmail')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "59e93d9b-55e7-5441-bdd0-03f4306f7fbb",
+          "name": "Refresh access token (rotates cookie)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "Sends the HttpOnly sc_refresh cookie from Postman's cookie jar. The server revokes it and returns a new access token plus a new refresh cookie. Replaying an old refresh cookie revokes the session.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.set('previousAccessToken', pm.environment.get('accessToken'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Decodes the header and payload of a JWT (no signature check - the server does that).",
+                  "function decodeJwt(token) {",
+                  "    const cryptoJs = require('crypto-js');",
+                  "    const part = (s) => {",
+                  "        const b64 = s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4);",
+                  "        return JSON.parse(cryptoJs.enc.Utf8.stringify(cryptoJs.enc.Base64.parse(b64)));",
+                  "    };",
+                  "    const [h, p] = token.split('.');",
+                  "    return { header: part(h), payload: part(p) };",
+                  "}function saveToken(varName, body) {",
+                  "    pm.environment.set(varName, body.accessToken);",
+                  "    const jwt = decodeJwt(body.accessToken);",
+                  "    pm.environment.set(varName + 'Payload', JSON.stringify(jwt.payload));",
+                  "    pm.environment.set(varName + 'ExpiresAt', new Date(jwt.payload.exp * 1000).toISOString());",
+                  "    console.log('JWT header', jwt.header);",
+                  "    console.log('JWT payload', jwt.payload);",
+                  "    const template = `",
+                  "      <style>body{font-family:system-ui;padding:8px} table{border-collapse:collapse} td,th{border:1px solid #ddd;padding:6px 10px;text-align:left}",
+                  "      code{word-break:break-all;display:block;background:#fff7ed;padding:8px;border-radius:6px}</style>",
+                  "      <h3>Access token (JWT, {{alg}})</h3><code>{{token}}</code>",
+                  "      <h4>Claims</h4><table>{{#each claims}}<tr><th>{{k}}</th><td>{{v}}</td></tr>{{/each}}</table>",
+                  "      <p>Refresh token: HttpOnly cookie <b>sc_refresh</b> (see the Cookies tab / cookie manager).</p>`;",
+                  "    const claims = Object.entries(jwt.payload).map(([k, v]) => ({",
+                  "        k, v: (k === 'iat' || k === 'exp') ? v + '  (' + new Date(v * 1000).toISOString() + ')' : v }));",
+                  "    pm.visualizer.set(template, { token: body.accessToken, alg: jwt.header.alg, claims });",
+                  "    return jwt;",
+                  "}",
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "saveToken('accessToken', pm.response.json());",
+                  "pm.test('A new access token was issued', () =>",
+                  "    pm.expect(pm.response.json().accessToken).to.not.eql(pm.environment.get('previousAccessToken')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "274cd91d-9a86-5641-860e-f2f06992ba1f",
+          "name": "Login with wrong password → 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"definitely-wrong-1\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 401', () => pm.expect(pm.response.code).to.be.oneOf([401]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "baedee17-3bdd-5d29-af55-1520e2023eba",
+          "name": "Cart without token → 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/cart",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cart"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 401', () => pm.expect(pm.response.code).to.be.oneOf([401]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "065b961a-503d-5356-a380-e9b896772486",
+          "name": "Cart with tampered token → 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}x"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/cart",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cart"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 401', () => pm.expect(pm.response.code).to.be.oneOf([401]));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "event": [],
+      "description": "Access tokens are HS256 JWTs (15 min) returned in the JSON body and stored in the `accessToken` environment variable; decoded claims are shown in the Visualize tab and saved to `accessTokenPayload`. The refresh token is an HttpOnly cookie (`sc_refresh`) kept by Postman's cookie jar."
+    },
+    {
+      "id": "cca1e5d9-01e9-5f70-87d8-f86576f61cc9",
+      "name": "02 Catalog (public)",
+      "item": [
+        {
+          "id": "4c00d013-99bf-55be-b85a-ac2ecb2c6adc",
+          "name": "List products (paged, sorted)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products?page=0&size=12&sort=price_asc&inStock=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "0"
+                },
+                {
+                  "key": "size",
+                  "value": "12"
+                },
+                {
+                  "key": "sort",
+                  "value": "price_asc"
+                },
+                {
+                  "key": "inStock",
+                  "value": "true"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "const page = pm.response.json();",
+                  "pm.test('Paged response', () => pm.expect(page).to.include.keys('content', 'page', 'size', 'totalElements', 'totalPages'));",
+                  "pm.test('At least one product in stock', () => pm.expect(page.content.length).to.be.above(0));",
+                  "const p = page.content.find(x => x.stock > 0);",
+                  "pm.environment.set('productId', p.id);",
+                  "console.log('Using product', p.id, p.name, p.price, 'stock', p.stock);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "d35ae6fc-10df-5af6-b723-2212f9982a6f",
+          "name": "Search products",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/search?query=headphones",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "search"
+              ],
+              "query": [
+                {
+                  "key": "query",
+                  "value": "headphones"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "518822f8-f7fa-52f3-ba7a-bd44e32a4c7f",
+          "name": "Autocomplete suggestions",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/search/suggest?q=wa",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "search",
+                "suggest"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "wa"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "pm.test('Returns suggestions array', () => pm.expect(pm.response.json().suggestions).to.be.an('array'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "205a3d66-2763-5700-8052-9b20865e2f47",
+          "name": "Product details",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{productId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{productId}}"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "pm.test('Has price and stock', () => pm.expect(pm.response.json()).to.include.keys('price', 'stock', 'images', 'attributes'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "55711650-9565-5c2a-8a55-2997e9076862",
+          "name": "Categories",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/categories",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "categories"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "56f1d8b4-a447-5119-bd60-718bfb62dde3",
+          "name": "Recommendations for product",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/recommendations?productId={{productId}}&limit=6",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "recommendations"
+              ],
+              "query": [
+                {
+                  "key": "productId",
+                  "value": "{{productId}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "6"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "6ce172fa-1fdc-5420-ae3e-2b0f73fb3d0d",
+          "name": "Reviews for product",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews?productId={{productId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews"
+              ],
+              "query": [
+                {
+                  "key": "productId",
+                  "value": "{{productId}}"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "event": [],
+      "description": "Live inventory (real-time stock) is a Server-Sent Events stream: `curl -N {{baseUrl}}/products/stock/stream` - it stays open, so it is not part of a collection run."
+    },
+    {
+      "id": "9bebca91-6ac2-5b31-a341-273ffc296dea",
+      "name": "03 Cart",
+      "item": [
+        {
+          "id": "2dfdb0b7-7b02-5b6a-954b-32566d67fd58",
+          "name": "Empty the cart",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/cart",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cart"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "26cf3556-acf1-51ee-9555-b659ed2ea3ad",
+          "name": "Add product to cart",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/cart",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cart"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"quantity\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "const c = pm.response.json();",
+                  "pm.test('Cart has the item', () => pm.expect(c.items.map(i => i.productId)).to.include(Number(pm.environment.get('productId'))));",
+                  "pm.test('Totals add up (subtotal + delivery = total)', () =>",
+                  "    pm.expect(Math.round((c.subtotal + c.shippingFee) * 100)).to.eql(Math.round(c.total * 100)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "7f648e3f-983f-5edc-8f3f-088905090b99",
+          "name": "Get cart",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/cart",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cart"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Decodes the header and payload of a JWT (no signature check - the server does that).",
+              "function decodeJwt(token) {",
+              "    const cryptoJs = require('crypto-js');",
+              "    const part = (s) => {",
+              "        const b64 = s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4);",
+              "        return JSON.parse(cryptoJs.enc.Utf8.stringify(cryptoJs.enc.Base64.parse(b64)));",
+              "    };",
+              "    const [h, p] = token.split('.');",
+              "    return { header: part(h), payload: part(p) };",
+              "}",
+              "",
+              "const token = pm.environment.get('accessToken');",
+              "let refresh = true;",
+              "if (token) {",
+              "    try { refresh = decodeJwt(token).payload.exp * 1000 < Date.now() + 30000; } catch (e) { refresh = true; }",
+              "}",
+              "const email = pm.environment.get('userEmail');",
+              "const password = pm.environment.get('userPassword');",
+              "if (refresh && email && password) {",
+              "    pm.sendRequest({",
+              "        url: pm.environment.get('baseUrl') + '/auth/login',",
+              "        method: 'POST',",
+              "        header: { 'Content-Type': 'application/json' },",
+              "        body: { mode: 'raw', raw: JSON.stringify({ email, password }) }",
+              "    }, (err, res) => {",
+              "        if (err || res.code !== 200) {",
+              "            console.warn('Auto-login for userEmail failed', err || res.code);",
+              "            return;",
+              "        }",
+              "        pm.environment.set('accessToken', res.json().accessToken);",
+              "        console.log('Auto-login OK, fresh accessToken stored');",
+              "    });",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "a7373494-304b-5ee9-8fce-216a546dc07e",
+      "name": "04 Checkout & Razorpay (no duplicates)",
+      "item": [
+        {
+          "id": "40ffa2d8-6e61-51d7-b9df-344cba82ea21",
+          "name": "Checkout → creates order + Razorpay order",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "checkout"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"gateway\": \"RAZORPAY\",\n  \"address\": {\n    \"fullName\": \"{{userName}}\",\n    \"phone\": \"9876543210\",\n    \"line1\": \"12 MG Road\",\n    \"line2\": \"Near Clock Tower\",\n    \"city\": \"Tenali\",\n    \"state\": \"Andhra Pradesh\",\n    \"postalCode\": \"522201\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new key per checkout attempt. Re-sending THIS request with the same key never creates a second order.",
+                  "pm.environment.set('idempotencyKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "const r = pm.response.json();",
+                  "pm.environment.set('orderId', r.orderId);",
+                  "pm.environment.set('amountPaise', r.amountPaise);",
+                  "pm.environment.set('payUrl', r.payUrl);",
+                  "pm.environment.set('razorpayOrderId', r.razorpay.razorpayOrderId);",
+                  "pm.test('Order awaits payment', () => pm.expect(r.orderStatus).to.eql('PENDING_PAYMENT'));",
+                  "pm.test('Real Razorpay order id (order_...)', () => pm.expect(r.razorpay.razorpayOrderId).to.match(/^order_/));",
+                  "pm.test('Checkout uses your Razorpay key', () => pm.expect(r.razorpay.keyId).to.match(/^rzp_(test|live)_/));",
+                  "pm.test('Amount is in paise', () => pm.expect(r.amountPaise).to.eql(r.razorpay.amount));",
+                  "pm.test('First request is not a replay', () => pm.expect(r.replayed).to.be.false);",
+                  "console.log('Open this URL in your browser to pay with Razorpay:', r.payUrl);",
+                  "pm.visualizer.set(`<div style=\"font-family:system-ui;padding:12px\">",
+                  "  <h3>Order #{{orderId}} created – {{amount}}</h3>",
+                  "  <p>Razorpay order <code>{{rzp}}</code></p>",
+                  "  <p><b>Pay it in the browser:</b> <a href=\"{{payUrl}}\" target=\"_blank\">{{payUrl}}</a></p>",
+                  "  <p>Test mode: UPI <code>success@razorpay</code> or a Razorpay test card. Then run folder 05.</p></div>`,",
+                  "  { orderId: r.orderId, amount: '₹' + (r.amountPaise / 100).toFixed(2), rzp: r.razorpay.razorpayOrderId, payUrl: r.payUrl });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "6d22d4d5-dcf6-50c4-acd9-2d4c7e490965",
+          "name": "Checkout again, same Idempotency-Key → same order",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "checkout"
+              ]
+            },
+            "description": "Simulates a double-click / network retry. The server returns the SAME order and the SAME Razorpay order.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"gateway\": \"RAZORPAY\",\n  \"address\": {\n    \"fullName\": \"{{userName}}\",\n    \"phone\": \"9876543210\",\n    \"line1\": \"12 MG Road\",\n    \"line2\": \"Near Clock Tower\",\n    \"city\": \"Tenali\",\n    \"state\": \"Andhra Pradesh\",\n    \"postalCode\": \"522201\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "const r = pm.response.json();",
+                  "pm.test('Same order id (no duplicate order)', () => pm.expect(r.orderId).to.eql(Number(pm.environment.get('orderId'))));",
+                  "pm.test('Same Razorpay order (no duplicate charge possible)', () =>",
+                  "    pm.expect(r.razorpay ? r.razorpay.razorpayOrderId : null).to.eql(pm.environment.get('razorpayOrderId')));",
+                  "pm.test('Marked as replay', () => pm.expect(r.replayed).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "8085a0fd-aafe-5b9b-867b-ca55e94749e8",
+          "name": "Pay / retry order → reuses the open Razorpay order",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderId}}/pay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderId}}",
+                "pay"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"gateway\": \"RAZORPAY\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200 or 409', () => pm.expect(pm.response.code).to.be.oneOf([200, 409]));",
+                  "if (pm.response.code === 200) {",
+                  "    pm.test('Still the same Razorpay order', () =>",
+                  "        pm.expect(pm.response.json().razorpay.razorpayOrderId).to.eql(pm.environment.get('razorpayOrderId')));",
+                  "} else {",
+                  "    console.log('Order is already paid/cancelled:', pm.response.json().detail);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "dc7218a0-e081-5e80-9608-f213e75bed2c",
+          "name": "Forged payment signature → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/payments/razorpay/verify",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments",
+                "razorpay",
+                "verify"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{orderId}}\",\n  \"razorpayOrderId\": \"{{razorpayOrderId}}\",\n  \"razorpayPaymentId\": \"pay_FORGED000000\",\n  \"razorpaySignature\": \"0000forged\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 400', () => pm.expect(pm.response.code).to.be.oneOf([400]));",
+                  "pm.test('Order was NOT marked paid', () => pm.expect(pm.response.json().detail).to.match(/signature/i));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "f7f3df78-40c5-5fa4-aaf4-1d5dac0497e2",
+          "name": "Order status (poll after paying)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "const o = pm.response.json();",
+                  "console.log('Order', o.id, o.status, 'payment', o.latestPayment);",
+                  "pm.test('Order is pending or paid', () => pm.expect(o.status).to.be.oneOf(['PENDING_PAYMENT', 'PAID', 'SHIPPED', 'DELIVERED']));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Decodes the header and payload of a JWT (no signature check - the server does that).",
+              "function decodeJwt(token) {",
+              "    const cryptoJs = require('crypto-js');",
+              "    const part = (s) => {",
+              "        const b64 = s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4);",
+              "        return JSON.parse(cryptoJs.enc.Utf8.stringify(cryptoJs.enc.Base64.parse(b64)));",
+              "    };",
+              "    const [h, p] = token.split('.');",
+              "    return { header: part(h), payload: part(p) };",
+              "}",
+              "",
+              "const token = pm.environment.get('accessToken');",
+              "let refresh = true;",
+              "if (token) {",
+              "    try { refresh = decodeJwt(token).payload.exp * 1000 < Date.now() + 30000; } catch (e) { refresh = true; }",
+              "}",
+              "const email = pm.environment.get('userEmail');",
+              "const password = pm.environment.get('userPassword');",
+              "if (refresh && email && password) {",
+              "    pm.sendRequest({",
+              "        url: pm.environment.get('baseUrl') + '/auth/login',",
+              "        method: 'POST',",
+              "        header: { 'Content-Type': 'application/json' },",
+              "        body: { mode: 'raw', raw: JSON.stringify({ email, password }) }",
+              "    }, (err, res) => {",
+              "        if (err || res.code !== 200) {",
+              "            console.warn('Auto-login for userEmail failed', err || res.code);",
+              "            return;",
+              "        }",
+              "        pm.environment.set('accessToken', res.json().accessToken);",
+              "        console.log('Auto-login OK, fresh accessToken stored');",
+              "    });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "description": "1) Checkout creates a real Razorpay order.  2) Open `payUrl` in the browser (signed in as the same shopper) and pay with Razorpay Checkout.  3) The backend verifies the signature, fetches the payment from Razorpay, captures it and pushes PAID live.  Nothing here can mark an order paid without a real Razorpay payment."
+    },
+    {
+      "id": "cde49a2b-c5b5-5b0e-8f60-0263de149334",
+      "name": "05 Razorpay API (your account)",
+      "item": [
+        {
+          "id": "020849a5-5b8e-5ac1-84b3-66c3ddaba36e",
+          "name": "Razorpay: fetch order",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{razorpayApiUrl}}/orders/{{razorpayOrderId}}",
+              "host": [
+                "{{razorpayApiUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{razorpayOrderId}}"
+              ]
+            },
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{razorpayKeyId}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{razorpayKeySecret}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "const o = pm.response.json();",
+                  "console.log('Razorpay order', o);",
+                  "pm.test('Amount matches our order', () => pm.expect(o.amount).to.eql(Number(pm.environment.get('amountPaise'))));",
+                  "pm.test('Receipt links to our order', () => pm.expect(o.receipt).to.include('sc_order_' + pm.environment.get('orderId')));",
+                  "pm.test('Razorpay order status', () => pm.expect(o.status).to.be.oneOf(['created', 'attempted', 'paid']));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "d4c6dc4e-83e9-5503-92aa-74e85515923c",
+          "name": "Razorpay: payments of the order",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{razorpayApiUrl}}/orders/{{razorpayOrderId}}/payments",
+              "host": [
+                "{{razorpayApiUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{razorpayOrderId}}",
+                "payments"
+              ]
+            },
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{razorpayKeyId}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{razorpayKeySecret}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "const items = pm.response.json().items || [];",
+                  "console.log('Attempts', items.map(p => ({ id: p.id, status: p.status, method: p.method, amount: p.amount })));",
+                  "const paid = items.find(p => p.status === 'captured' || p.status === 'authorized');",
+                  "if (paid) {",
+                  "    pm.environment.set('razorpayPaymentId', paid.id);",
+                  "    pm.test('Payment found: ' + paid.id + ' (' + paid.status + ')', () => pm.expect(paid.id).to.match(/^pay_/));",
+                  "    pm.test('At most one successful payment on this Razorpay order', () =>",
+                  "        pm.expect(items.filter(p => p.status === 'captured').length).to.be.at.most(1));",
+                  "} else {",
+                  "    console.log('No successful payment yet - open {{payUrl}} and pay, then re-run this folder.');",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "13d413b5-66da-53d8-974a-d43a0e382cd4",
+          "name": "Razorpay: fetch payment",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{razorpayApiUrl}}/payments/{{razorpayPaymentId}}",
+              "host": [
+                "{{razorpayApiUrl}}"
+              ],
+              "path": [
+                "payments",
+                "{{razorpayPaymentId}}"
+              ]
+            },
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{razorpayKeyId}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{razorpayKeySecret}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200 or 400', () => pm.expect(pm.response.code).to.be.oneOf([200, 400]));",
+                  "if (pm.response.code === 200) {",
+                  "    const p = pm.response.json();",
+                  "    pm.test('Payment belongs to our Razorpay order', () => pm.expect(p.order_id).to.eql(pm.environment.get('razorpayOrderId')));",
+                  "    pm.test('Captured by the backend (auto-capture)', () => pm.expect(p.status).to.be.oneOf(['captured', 'refunded']));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "b1687639-2721-5606-819f-6ac74c6ac216",
+          "name": "Backend: verify payment (signature from key secret)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/payments/razorpay/verify",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments",
+                "razorpay",
+                "verify"
+              ]
+            },
+            "description": "Same call the browser makes after Razorpay Checkout. The pre-request script computes the checkout signature from your key secret (kept locally in the environment). The backend still fetches the payment from Razorpay, so this only succeeds for a real payment. Idempotent.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{orderId}}\",\n  \"razorpayOrderId\": \"{{razorpayOrderId}}\",\n  \"razorpayPaymentId\": \"{{razorpayPaymentId}}\",\n  \"razorpaySignature\": \"{{razorpaySignature}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cryptoJs = require('crypto-js');",
+                  "const secret = pm.environment.get('razorpayKeySecret');",
+                  "const payId = pm.environment.get('razorpayPaymentId');",
+                  "if (secret && payId) {",
+                  "    pm.environment.set('razorpaySignature',",
+                  "        cryptoJs.HmacSHA256(pm.environment.get('razorpayOrderId') + '|' + payId, secret).toString(cryptoJs.enc.Hex));",
+                  "} else {",
+                  "    console.warn('Set razorpayKeySecret and pay the order first (razorpayPaymentId is filled by the previous request).');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200 or 400', () => pm.expect(pm.response.code).to.be.oneOf([200, 400]));",
+                  "if (pm.response.code === 200) {",
+                  "    const r = pm.response.json();",
+                  "    pm.test('Order is PAID', () => pm.expect(r.orderStatus).to.be.oneOf(['PAID', 'SHIPPED', 'DELIVERED']));",
+                  "    pm.test('Payment SUCCEEDED (verified with Razorpay)', () => pm.expect(r.paymentStatus).to.eql('SUCCEEDED'));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "bcea49b7-6c2a-56e4-83b5-cfc303b293a0",
+          "name": "Order status after payment",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderId}}"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "const o = pm.response.json();",
+                  "pm.test('Order is PAID once Razorpay confirmed', () => pm.expect(o.status).to.be.oneOf(['PAID', 'SHIPPED', 'DELIVERED']));",
+                  "pm.test('Payment reference is the Razorpay payment id', () =>",
+                  "    pm.expect(o.latestPayment.gatewayPaymentId).to.eql(pm.environment.get('razorpayPaymentId')));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Decodes the header and payload of a JWT (no signature check - the server does that).",
+              "function decodeJwt(token) {",
+              "    const cryptoJs = require('crypto-js');",
+              "    const part = (s) => {",
+              "        const b64 = s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4);",
+              "        return JSON.parse(cryptoJs.enc.Utf8.stringify(cryptoJs.enc.Base64.parse(b64)));",
+              "    };",
+              "    const [h, p] = token.split('.');",
+              "    return { header: part(h), payload: part(p) };",
+              "}",
+              "",
+              "const token = pm.environment.get('accessToken');",
+              "let refresh = true;",
+              "if (token) {",
+              "    try { refresh = decodeJwt(token).payload.exp * 1000 < Date.now() + 30000; } catch (e) { refresh = true; }",
+              "}",
+              "const email = pm.environment.get('userEmail');",
+              "const password = pm.environment.get('userPassword');",
+              "if (refresh && email && password) {",
+              "    pm.sendRequest({",
+              "        url: pm.environment.get('baseUrl') + '/auth/login',",
+              "        method: 'POST',",
+              "        header: { 'Content-Type': 'application/json' },",
+              "        body: { mode: 'raw', raw: JSON.stringify({ email, password }) }",
+              "    }, (err, res) => {",
+              "        if (err || res.code !== 200) {",
+              "            console.warn('Auto-login for userEmail failed', err || res.code);",
+              "            return;",
+              "        }",
+              "        pm.environment.set('accessToken', res.json().accessToken);",
+              "        console.log('Auto-login OK, fresh accessToken stored');",
+              "    });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "description": "Talks to the Razorpay API ({{razorpayApiUrl}}) directly with Basic auth (razorpayKeyId / razorpayKeySecret) to cross-check what the backend recorded. Run it after paying at `payUrl`.",
+      "auth": {
+        "type": "basic",
+        "basic": [
+          {
+            "key": "username",
+            "value": "{{razorpayKeyId}}",
+            "type": "string"
+          },
+          {
+            "key": "password",
+            "value": "{{razorpayKeySecret}}",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "id": "5e16eef5-ee13-50e2-bdb8-9f833ee7b1db",
+      "name": "06 Webhooks",
+      "item": [
+        {
+          "id": "341bad8f-f564-5a01-a40c-05a7d20553d6",
+          "name": "Razorpay webhook with bad signature → 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Razorpay-Signature",
+                "value": "invalid"
+              },
+              {
+                "key": "X-Razorpay-Event-Id",
+                "value": "evt_postman_bad"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/razorpay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "razorpay"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"entity\":\"event\",\"event\":\"payment.captured\",\"payload\":{\"payment\":{\"entity\":{\"id\":\"{{razorpayPaymentId}}\",\"order_id\":\"{{razorpayOrderId}}\",\"amount\":{{amountPaise}},\"status\":\"captured\"}}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 401', () => pm.expect(pm.response.code).to.be.oneOf([401]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "63882adc-edbc-5826-9ddb-bb2e72bb011e",
+          "name": "Razorpay webhook, correctly signed (re-delivery)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Razorpay-Signature",
+                "value": "{{webhookSignature}}"
+              },
+              {
+                "key": "X-Razorpay-Event-Id",
+                "value": "evt_postman_{{$timestamp}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/razorpay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "razorpay"
+              ]
+            },
+            "description": "Signs the body with razorpayWebhookSecret (same as Razorpay does). The backend re-fetches the payment from Razorpay before acting, so a signed body for a payment that does not exist changes nothing.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"entity\":\"event\",\"event\":\"payment.captured\",\"payload\":{\"payment\":{\"entity\":{\"id\":\"{{razorpayPaymentId}}\",\"order_id\":\"{{razorpayOrderId}}\",\"amount\":{{amountPaise}},\"status\":\"captured\"}}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cryptoJs = require('crypto-js');",
+                  "const secret = pm.environment.get('razorpayWebhookSecret');",
+                  "const raw = pm.variables.replaceIn(pm.request.body.raw);",
+                  "pm.request.body.update(raw); // sign exactly the bytes that are sent",
+                  "pm.environment.set('webhookSignature', secret ? cryptoJs.HmacSHA256(raw, secret).toString(cryptoJs.enc.Hex) : 'no-secret');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const secret = pm.environment.get('razorpayWebhookSecret');",
+                  "pm.test(secret ? 'Accepted (200)' : 'No webhook secret set locally -> rejected (401)', () =>",
+                  "    pm.expect(pm.response.code).to.eql(secret ? 200 : 401));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "event": []
+    },
+    {
+      "id": "e27c0690-cadd-58bc-ba33-b53994bae115",
+      "name": "07 Orders & reviews",
+      "item": [
+        {
+          "id": "818f35d4-9098-5fc7-a6e2-650cd1dd876b",
+          "name": "My orders",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders?page=0&size=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "0"
+                },
+                {
+                  "key": "size",
+                  "value": "10"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "pm.test('Contains the checkout order', () =>",
+                  "    pm.expect(pm.response.json().content.map(o => o.id)).to.include(Number(pm.environment.get('orderId'))));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "c1f4d692-111b-5acd-9c18-6799b429e4d2",
+          "name": "Order details",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "77c26639-6ef9-595e-9564-03face91c269",
+          "name": "Write a review",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"rating\": 5,\n  \"title\": \"Great value\",\n  \"comment\": \"Tested from Postman\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 201 or 409', () => pm.expect(pm.response.code).to.be.oneOf([201, 409]));",
+                  "if (pm.response.code === 201) {",
+                  "    pm.test('Verified purchase flag reflects a paid order', () => pm.expect(pm.response.json()).to.have.property('verifiedPurchase'));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Decodes the header and payload of a JWT (no signature check - the server does that).",
+              "function decodeJwt(token) {",
+              "    const cryptoJs = require('crypto-js');",
+              "    const part = (s) => {",
+              "        const b64 = s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4);",
+              "        return JSON.parse(cryptoJs.enc.Utf8.stringify(cryptoJs.enc.Base64.parse(b64)));",
+              "    };",
+              "    const [h, p] = token.split('.');",
+              "    return { header: part(h), payload: part(p) };",
+              "}",
+              "",
+              "const token = pm.environment.get('accessToken');",
+              "let refresh = true;",
+              "if (token) {",
+              "    try { refresh = decodeJwt(token).payload.exp * 1000 < Date.now() + 30000; } catch (e) { refresh = true; }",
+              "}",
+              "const email = pm.environment.get('userEmail');",
+              "const password = pm.environment.get('userPassword');",
+              "if (refresh && email && password) {",
+              "    pm.sendRequest({",
+              "        url: pm.environment.get('baseUrl') + '/auth/login',",
+              "        method: 'POST',",
+              "        header: { 'Content-Type': 'application/json' },",
+              "        body: { mode: 'raw', raw: JSON.stringify({ email, password }) }",
+              "    }, (err, res) => {",
+              "        if (err || res.code !== 200) {",
+              "            console.warn('Auto-login for userEmail failed', err || res.code);",
+              "            return;",
+              "        }",
+              "        pm.environment.set('accessToken', res.json().accessToken);",
+              "        console.log('Auto-login OK, fresh accessToken stored');",
+              "    });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "description": "Live order status stream (SSE): `curl -N -H \"Authorization: Bearer <token>\" {{baseUrl}}/orders/{{orderId}}/events`"
+    },
+    {
+      "id": "f09a8bff-1b62-5bde-8ff4-9a56d5b72ff6",
+      "name": "08 Admin (ROLE_ADMIN JWT)",
+      "item": [
+        {
+          "id": "6267f60b-2d09-5411-8dbb-ea4d48c36e13",
+          "name": "Login admin",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Decodes the header and payload of a JWT (no signature check - the server does that).",
+                  "function decodeJwt(token) {",
+                  "    const cryptoJs = require('crypto-js');",
+                  "    const part = (s) => {",
+                  "        const b64 = s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4);",
+                  "        return JSON.parse(cryptoJs.enc.Utf8.stringify(cryptoJs.enc.Base64.parse(b64)));",
+                  "    };",
+                  "    const [h, p] = token.split('.');",
+                  "    return { header: part(h), payload: part(p) };",
+                  "}function saveToken(varName, body) {",
+                  "    pm.environment.set(varName, body.accessToken);",
+                  "    const jwt = decodeJwt(body.accessToken);",
+                  "    pm.environment.set(varName + 'Payload', JSON.stringify(jwt.payload));",
+                  "    pm.environment.set(varName + 'ExpiresAt', new Date(jwt.payload.exp * 1000).toISOString());",
+                  "    console.log('JWT header', jwt.header);",
+                  "    console.log('JWT payload', jwt.payload);",
+                  "    const template = `",
+                  "      <style>body{font-family:system-ui;padding:8px} table{border-collapse:collapse} td,th{border:1px solid #ddd;padding:6px 10px;text-align:left}",
+                  "      code{word-break:break-all;display:block;background:#fff7ed;padding:8px;border-radius:6px}</style>",
+                  "      <h3>Access token (JWT, {{alg}})</h3><code>{{token}}</code>",
+                  "      <h4>Claims</h4><table>{{#each claims}}<tr><th>{{k}}</th><td>{{v}}</td></tr>{{/each}}</table>",
+                  "      <p>Refresh token: HttpOnly cookie <b>sc_refresh</b> (see the Cookies tab / cookie manager).</p>`;",
+                  "    const claims = Object.entries(jwt.payload).map(([k, v]) => ({",
+                  "        k, v: (k === 'iat' || k === 'exp') ? v + '  (' + new Date(v * 1000).toISOString() + ')' : v }));",
+                  "    pm.visualizer.set(template, { token: body.accessToken, alg: jwt.header.alg, claims });",
+                  "    return jwt;",
+                  "}",
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                  "const jwt = saveToken('adminAccessToken', pm.response.json());",
+                  "pm.test('JWT carries role ROLE_ADMIN', () => pm.expect(jwt.payload.role).to.eql('ROLE_ADMIN'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "961ee6eb-bb24-5369-b88b-df07b64591e8",
+          "name": "Shopper token on admin API → 403",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "orders"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{accessToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 403', () => pm.expect(pm.response.code).to.be.oneOf([403]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "e27c6f03-e090-5fde-9192-5f2b23cba311",
+          "name": "All orders",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/orders?page=0&size=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "orders"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "0"
+                },
+                {
+                  "key": "size",
+                  "value": "20"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "b5535a24-aa1c-5f1f-9771-fceea8a2c74a",
+          "name": "Paid orders",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/orders?status=PAID",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "orders"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "PAID"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "30920d42-f8e8-5992-860f-998bd58ebc3b",
+          "name": "Order details (admin)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "6bf2673b-ce4a-5cb9-a393-632de4030239",
+          "name": "Mark order shipped (only if PAID)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/orders/{{orderId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "orders",
+                "{{orderId}}",
+                "status"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"SHIPPED\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200 or 409', () => pm.expect(pm.response.code).to.be.oneOf([200, 409]));",
+                  "if (pm.response.code === 409) console.log('Not paid yet, so it cannot ship:', pm.response.json().detail);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "8c059273-4bd5-5e31-a256-7606b36b3628",
+          "name": "Create product",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Postman Test Kettle\",\n  \"description\": \"Created from Postman\",\n  \"price\": 1299,\n  \"mrp\": 1799,\n  \"stock\": 25,\n  \"imageUrl\": \"https://images.unsplash.com/photo-1594213114663-d94db9b17125?w=800\",\n  \"attributes\": {\n    \"capacity\": \"1.5 L\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 201', () => pm.expect(pm.response.code).to.be.oneOf([201]));pm.environment.set('adminProductId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "df2c8443-46f0-5d8c-83f9-3c26d93602dc",
+          "name": "Restock product (pushes live stock update)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{adminProductId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{adminProductId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Postman Test Kettle\",\n  \"description\": \"Restocked from Postman\",\n  \"price\": 1199,\n  \"mrp\": 1799,\n  \"stock\": 40,\n  \"attributes\": {\n    \"capacity\": \"1.5 L\"\n  },\n  \"active\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 200', () => pm.expect(pm.response.code).to.be.oneOf([200]));pm.test('Stock updated', () => pm.expect(pm.response.json().stock).to.eql(40));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "52048fa6-3718-5ec0-baf0-c17b285408b5",
+          "name": "Hide product",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{adminProductId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{adminProductId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 204', () => pm.expect(pm.response.code).to.be.oneOf([204]));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Decodes the header and payload of a JWT (no signature check - the server does that).",
+              "function decodeJwt(token) {",
+              "    const cryptoJs = require('crypto-js');",
+              "    const part = (s) => {",
+              "        const b64 = s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4);",
+              "        return JSON.parse(cryptoJs.enc.Utf8.stringify(cryptoJs.enc.Base64.parse(b64)));",
+              "    };",
+              "    const [h, p] = token.split('.');",
+              "    return { header: part(h), payload: part(p) };",
+              "}",
+              "",
+              "const token = pm.environment.get('adminAccessToken');",
+              "let refresh = true;",
+              "if (token) {",
+              "    try { refresh = decodeJwt(token).payload.exp * 1000 < Date.now() + 30000; } catch (e) { refresh = true; }",
+              "}",
+              "const email = pm.environment.get('adminEmail');",
+              "const password = pm.environment.get('adminPassword');",
+              "if (refresh && email && password) {",
+              "    pm.sendRequest({",
+              "        url: pm.environment.get('baseUrl') + '/auth/login',",
+              "        method: 'POST',",
+              "        header: { 'Content-Type': 'application/json' },",
+              "        body: { mode: 'raw', raw: JSON.stringify({ email, password }) }",
+              "    }, (err, res) => {",
+              "        if (err || res.code !== 200) {",
+              "            console.warn('Auto-login for adminEmail failed', err || res.code);",
+              "            return;",
+              "        }",
+              "        pm.environment.set('adminAccessToken', res.json().accessToken);",
+              "        console.log('Auto-login OK, fresh adminAccessToken stored');",
+              "    });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{adminAccessToken}}",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "id": "b953524a-ee92-5b01-b9da-a9ce1514409a",
+      "name": "99 Session end",
+      "item": [
+        {
+          "id": "c7fbdae1-a602-5b4d-83df-a451f8d65c9e",
+          "name": "Logout (revokes refresh token)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "logout"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 204', () => pm.expect(pm.response.code).to.be.oneOf([204]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "f6e57ed6-0f42-5347-bca0-6ae5924638fe",
+          "name": "Refresh after logout → 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP status is 401', () => pm.expect(pm.response.code).to.be.oneOf([401]));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "event": []
+    }
+  ]
+}
